@@ -1,0 +1,8 @@
+{
+  "managed_by": "pre-V1 prototype",
+  "binding": {
+    "enterprise": "old-enterprise",
+    "l2": "old-l2",
+    "persona": "old-persona"
+  }
+}
