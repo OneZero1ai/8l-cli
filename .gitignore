@@ -1,0 +1,26 @@
+# Build artifacts
+/8l
+/bin/
+/dist/
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local env
+.env
+.env.local
+
+# Go workspace
+go.work
+go.work.sum
