@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "managed_by": "8l join v0.1.0",
+  "managed_at": "2026-05-09T15:24:00Z",
+  "binding": {
+    "enterprise": "8th-layer-corp",
+    "l2": "engineering",
+    "persona": "alice"
+  },
+  "mcpServers": {
+    "cq": {
+      "type": "stdio",
+      "command": "cq",
+      "env": {
+        "CQ_ADDR": "https://engineering.8th-layer-corp.8th-layer.ai",
+        "CQ_API_KEY": "cqa.v1.0123456789abcdef0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "version": 99,
+  "managed_by": "8l join from-the-future",
+  "binding": {
+    "enterprise": "future-corp",
+    "l2": "future-l2",
+    "persona": "future-persona"
+  }
+}
