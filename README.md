@@ -14,9 +14,22 @@ V1 subcommands:
 
 See [`docs/USAGE.md`](docs/USAGE.md) for end-to-end examples.
 
-## Build
+## Install
 
-Requires Go 1.23+.
+Requires Go 1.23+ and git.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/OneZero1ai/8l-cli/main/scripts/install.sh | bash
+```
+
+Or manually:
+
+```sh
+make build       # → ./8l
+sudo install -m 0755 ./8l /usr/local/bin/8l
+```
+
+## Build
 
 ```sh
 make build       # → ./8l

@@ -21,6 +21,14 @@ With those three values, you can `8l join`.
 
 ## Install
 
+One-liner:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/OneZero1ai/8l-cli/main/scripts/install.sh | bash
+```
+
+Or from a local clone:
+
 ```sh
 make build && sudo install -m 0755 ./8l /usr/local/bin/8l
 8l --version
