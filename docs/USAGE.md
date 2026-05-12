@@ -1,5 +1,24 @@
 # 8l-cli usage
 
+## Prerequisites
+
+Before you can `8l join`, someone must have bootstrapped the Enterprise
+and L2 you're joining. That operator runs the
+[`/8l:setup` skill](https://github.com/OneZero1ai/8th-layer-directory/blob/main/setup-skill.md)
+in Claude Code, which:
+
+1. Deploys the L2 stack (AWS CloudFormation)
+2. Issues the AAISN on the directory
+3. Establishes peering with the 8th-layer network
+4. Mints the first API key
+
+Once the operator completes `/8l:setup`, they share:
+- **Enterprise slug** (e.g., `8th-layer-corp`)
+- **L2 group name** (e.g., `engineering`)
+- **Your API key** (`cqa.v1.*` format, minted by the L2 admin)
+
+With those three values, you can `8l join`.
+
 ## Install
 
 ```sh
