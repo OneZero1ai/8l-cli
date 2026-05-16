@@ -36,7 +36,7 @@ func TestEndpointMissing(t *testing.T) {
 }
 
 func TestResolveAPIKey(t *testing.T) {
-	literal := "cqa.v1.0123456789abcdef0123456789abcdef." + repeat("a", 64)
+	literal := "cqa.v1.0123456789abcdef0123456789abcdef." + repeat("a", 52)
 	got, err := ResolveAPIKey(literal)
 	if err != nil {
 		t.Fatalf("literal: %v", err)
@@ -73,10 +73,19 @@ func TestResolveAPIKeyErrors(t *testing.T) {
 	if _, err := ResolveAPIKey("$NONEXISTENT_VAR_xyz"); err == nil {
 		t.Fatal("missing env should error")
 	}
+	// Regression: the secret tail is exactly 52 url-safe chars (the L2
+	// server mints token_urlsafe(39)). Reject the off-by-N shapes — a
+	// 64-char tail was the original wrong validator and broke every join.
+	pfx := "cqa.v1.0123456789abcdef0123456789abcdef."
+	for _, n := range []int{51, 53, 64} {
+		if _, err := ResolveAPIKey(pfx + repeat("a", n)); err == nil {
+			t.Fatalf("tail of %d chars should be rejected", n)
+		}
+	}
 }
 
 func TestKeyID(t *testing.T) {
-	literal := "cqa.v1.0123456789abcdef0123456789abcdef." + repeat("a", 64)
+	literal := "cqa.v1.0123456789abcdef0123456789abcdef." + repeat("a", 52)
 	if got := KeyID(literal); got != "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("KeyID = %q", got)
 	}

@@ -79,6 +79,11 @@ func TestSmokeProposeTierPrivate(t *testing.T) {
 		if len(req.Domains) == 0 || req.Domains[0] != "onboarding-smoke" {
 			t.Errorf("expected onboarding-smoke domain, got %v", req.Domains)
 		}
+		// The server requires the nested `insight` object — a flat body
+		// is rejected 422. Assert the probe sends it nested.
+		if req.Insight.Summary == "" || req.Insight.Action == "" {
+			t.Errorf("expected nested insight {summary,action}, got %+v", req.Insight)
+		}
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(ProposeResponse{
 			UnitID: "ku-123",
