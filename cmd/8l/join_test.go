@@ -14,7 +14,8 @@ import (
 	"github.com/OneZero1ai/8l-cli/internal/resolver"
 )
 
-const validKey = "cqa.v1.0123456789abcdef0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+// 52-char url-safe tail — the shape the L2 server mints (token_urlsafe(39)).
+const validKey = "cqa.v1.0123456789abcdef0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123"
 
 // newL2 spins up a mock that handles /auth/me and /propose in the
 // happy-path shape. Override individual handlers by passing a setter.

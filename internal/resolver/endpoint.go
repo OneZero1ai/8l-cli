@@ -48,12 +48,15 @@ func Host(enterprise, l2 string) (string, error) {
 	return u.Hostname(), nil
 }
 
-// keyShape matches `cqa.v1.<32hex>.<64chars>` per Decision 28.
+// keyShape matches `cqa.v1.<32hex>.<52chars>` — the shape the L2 server
+// actually mints (POST /auth/api-keys) and the cq plugin validates
+// (cq_setup.py API_KEY_RE). The 52-char tail is a url-safe base64 of
+// 39 secret bytes (secrets.token_urlsafe in api_keys.py).
 //
-// The 32hex is the key ID (lookup key, safe to log); the 64chars is the
+// The 32hex is the key ID (lookup key, safe to log); the 52chars is the
 // secret (NEVER log). The split allows the L2 to validate the key shape
 // before doing a DB lookup.
-var keyShape = regexp.MustCompile(`^cqa\.v1\.[0-9a-f]{32}\.[A-Za-z0-9_-]{64}$`)
+var keyShape = regexp.MustCompile(`^cqa\.v1\.[0-9a-f]{32}\.[A-Za-z0-9_-]{52}$`)
 
 // ResolveAPIKey accepts either a literal key or `$VAR` indirection.
 //
@@ -86,7 +89,7 @@ func ResolveAPIKey(in string) (string, error) {
 	}
 	if !keyShape.MatchString(resolved) {
 		// We deliberately do NOT echo the key in the error.
-		return "", fmt.Errorf("resolver: api key shape invalid (expected cqa.v1.<32hex>.<64chars>)")
+		return "", fmt.Errorf("resolver: api key shape invalid (expected cqa.v1.<32hex>.<52chars>)")
 	}
 	return resolved, nil
 }
