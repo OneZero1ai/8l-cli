@@ -14,9 +14,30 @@ V1 subcommands:
 
 See [`docs/USAGE.md`](docs/USAGE.md) for end-to-end examples.
 
-## Build
+## Install
 
-Requires Go 1.23+.
+One-shot setup (build + install + join) for an operator on a fresh box:
+
+```sh
+./setup.sh \
+  --enterprise 8th-layer-corp \
+  --l2         engineering \
+  --persona    alice \
+  --api-key    cqa.v1.…
+```
+
+Run with no flags for interactive prompts; see `./setup.sh --help` for
+env-var fallbacks (`EIGHTL_*`), `--api-key-stdin`, and `--build-only`
+mode. Requires Go 1.23+, git, and make.
+
+To reverse it:
+
+```sh
+./setup.sh --uninstall              # unjoin (local) + remove binary
+./setup.sh --uninstall --revoke     # also revoke the L2 key server-side
+```
+
+## Build
 
 ```sh
 make build       # → ./8l
