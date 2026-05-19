@@ -33,8 +33,9 @@
 #
 # TODO(plugin): this installs only the 8l CLI. The 8l-cq Claude Code
 #   plugin still has to be wired up manually inside Claude Code:
-#     /plugin marketplace add https://8thlayer.onezero1.ai/marketplace.json
-#     /plugin install 8l-cq
+#     /plugin marketplace add OneZero1ai/8th-layer-marketplace
+#     /plugin install 8l-cq@8th-layer
+#     /reload-plugins
 #   and CQ_ADDR / CQ_API_KEY set under "env" in ~/.claude/settings.json.
 #   A future iteration can merge that block via jq once the plugin
 #   surface stabilises.
@@ -242,8 +243,9 @@ setup: done. 8l is installed at $PREFIX/8l and bound to $L2.$ENTERPRISE.
 Next — install the Claude Code plugin manually (TODO: setup.sh should
 do this for you in a future iteration):
 
-  /plugin marketplace add https://8thlayer.onezero1.ai/marketplace.json
-  /plugin install 8l-cq
+  /plugin marketplace add OneZero1ai/8th-layer-marketplace
+  /plugin install 8l-cq@8th-layer
+  /reload-plugins
 
 then add to ~/.claude/settings.json:
 
