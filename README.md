@@ -7,6 +7,7 @@ V1 subcommands:
 | Command | Purpose |
 |---|---|
 | `8l join` | Bind this session — write a claude-mux profile + smoke-test the binding |
+| `8l quick <token>` | One-arg join from a `cqq.v1.…` bundle printed by a prior `8l join` |
 | `8l status` | Print the current binding + probe `/auth/me` and `propose` |
 | `8l unjoin` | Remove the local binding (optionally revoke the L2 key) |
 | `8l doctor` | Diagnose binding issues (DNS, TLS, auth, MCP server) |
