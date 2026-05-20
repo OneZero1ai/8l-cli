@@ -89,3 +89,107 @@ export CQ_ADDR_OVERRIDE=https://l2.customer.example.com
 ```
 
 The override applies to every subcommand for the duration of that shell.
+
+## Knowledge-unit subcommands (ported from cq, Decision 35)
+
+Once `8l join` has provisioned a profile, the following subcommands
+operate against the bound L2. They reuse the stored `cqa.v1.…` API
+key and `CQ_ADDR` from `~/.claude-mux/profiles/8l-cq.json` — no need
+to re-pass them.
+
+If you run a knowledge-unit subcommand before `8l join`, it exits
+with code 10 and points at `8l join`.
+
+### Propose a knowledge unit
+
+```sh
+8l propose \
+  --summary "rollup S3 buckets need DeleteObject on the role policy" \
+  --detail  "Otherwise the lifecycle rule silently fails." \
+  --action  "Add s3:DeleteObject to the IAM policy on the role." \
+  --domain  aws --domain s3 --domain test-fleet \
+  --language terraform \
+  --pattern  iam-policy
+```
+
+Server stamps `id`, `created_by`, `tier`, and timestamps.
+
+If the L2 is unreachable (DNS / 5xx / TLS error) the propose lands in
+the local outbox at `~/.claude-mux/8l-outbox.jsonl` and is replayed by
+`8l drain`. Auth failures (401/403) do **not** queue — they exit with
+code 13.
+
+### Query
+
+```sh
+8l query --domain aws --domain s3
+8l query --domain test-fleet --limit 20
+8l query --domain react --language typescript --pattern hook
+8l query --domain aws --format json | jq '.[].id'
+```
+
+### Confirm
+
+```sh
+8l confirm ku_abc123def…
+```
+
+Boosts the unit's confidence by one confirmation.
+
+### Flag
+
+```sh
+8l flag ku_abc123def… --reason stale
+8l flag ku_abc123def… --reason incorrect --detail "broke after v2 release"
+8l flag ku_abc123def… --reason duplicate --duplicate-of ku_other…
+```
+
+Valid reasons: `stale`, `incorrect`, `duplicate`. Duplicate requires
+`--duplicate-of`.
+
+### Status (knowledge-unit aggregate counts)
+
+```sh
+8l status                # default: binding + smoke probe
+8l status --ku-stats     # adds total_units / tiers / domains
+8l status --format json  # JSON payload (implies --ku-stats)
+```
+
+The default `8l status` continues to print the binding probe (the
+existing `--no-probe`/`--verbose` flags still work). `--ku-stats`
+extends it with the L2's per-Enterprise aggregate counts that the
+old `cq status` printed.
+
+### Drain
+
+```sh
+8l drain --dry-run        # count without pushing
+8l drain                  # replay the outbox into the L2
+8l drain --format json    # JSON {pushed, failed, pending, warnings}
+```
+
+Successfully-pushed entries are removed from the outbox. Auth failure
+aborts the drain and preserves the queue (exit 13). Non-auth errors
+leave the failing entries queued and exit non-zero so cron/CI can
+notice.
+
+### Prompt
+
+```sh
+8l prompt reflect            # /cq:reflect slash-command body
+8l prompt skill              # cq agent skill prompt body
+8l prompt skill --format json
+```
+
+Pure-local — no L2 contact, no auth needed. Use these when wiring cq
+into agent frameworks that don't have the plugin installed.
+
+## Exit codes (extended)
+
+The codes from V1 still apply. New ones used by the cq subcommands:
+
+| Code | Meaning |
+|---|---|
+| 10 | Missing required arg (also: unsupported `--format`, invalid `--reason`, missing `--duplicate-of`, missing profile) |
+| 13 | Auth failed against `/api/v1/*` |
+| 1  | Server 5xx / unexpected error / partial drain failure |

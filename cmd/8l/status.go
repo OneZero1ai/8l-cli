@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -18,6 +19,8 @@ type statusFlags struct {
 	ConfigDir string
 	NoProbe   bool
 	Verbose   bool
+	KUStats   bool
+	Format    string
 }
 
 func newStatusCmd() *cobra.Command {
@@ -25,6 +28,11 @@ func newStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show the current binding and probe its health",
+		Long: `Show the current binding and probe its health.
+
+Default output is the binding + live /auth/me + smoke propose check.
+Pass --ku-stats to also pull the L2's per-Enterprise knowledge-unit
+aggregate counts (the cq CLI's old ` + "`cq status`" + ` surface).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runStatus(cmd.OutOrStdout(), cmd.ErrOrStderr(), f)
 		},
@@ -33,6 +41,8 @@ func newStatusCmd() *cobra.Command {
 	cmd.Flags().StringVar(&f.ConfigDir, "config-dir", profile.DefaultConfigDir, "Profile directory")
 	cmd.Flags().BoolVar(&f.NoProbe, "no-probe", false, "Skip the live /auth/me + propose probe")
 	cmd.Flags().BoolVar(&f.Verbose, "verbose", false, "Print HTTP request/response previews to stderr")
+	cmd.Flags().BoolVar(&f.KUStats, "ku-stats", false, "Also fetch /api/v1/stats (KU tier + domain counts)")
+	cmd.Flags().StringVar(&f.Format, "format", "text", "Output format: text or json (json implies --ku-stats)")
 	return cmd
 }
 
@@ -94,5 +104,39 @@ func runStatus(stdout, stderr io.Writer, f *statusFlags) error {
 		return wrapCoded(ExitSmokeLocalTier, fmt.Errorf("smoke tier=%s", resp.Tier))
 	}
 	fmt.Fprintf(stdout, "  propose smoke:  OK (tier=%s unit_id=%s)\n", resp.Tier, resp.UnitID)
+
+	if f.KUStats || f.Format == "json" {
+		stats, err := client.Stats(ctx)
+		if err != nil {
+			fmt.Fprintf(stdout, "  /api/v1/stats:  FAIL (%s)\n", err)
+			return wrapCoded(ExitUnexpected, err)
+		}
+		if f.Format == "json" {
+			return writeJSON(stdout, stats)
+		}
+		fmt.Fprintf(stdout, "  total units:    %d\n", stats.TotalUnits)
+		if len(stats.Tiers) > 0 {
+			fmt.Fprintln(stdout, "  tiers:")
+			tierNames := make([]string, 0, len(stats.Tiers))
+			for t := range stats.Tiers {
+				tierNames = append(tierNames, t)
+			}
+			sort.Strings(tierNames)
+			for _, t := range tierNames {
+				fmt.Fprintf(stdout, "    %-12s %d\n", t, stats.Tiers[t])
+			}
+		}
+		if len(stats.Domains) > 0 {
+			fmt.Fprintln(stdout, "  domains:")
+			domNames := make([]string, 0, len(stats.Domains))
+			for d := range stats.Domains {
+				domNames = append(domNames, d)
+			}
+			sort.Strings(domNames)
+			for _, d := range domNames {
+				fmt.Fprintf(stdout, "    %-20s %d\n", d, stats.Domains[d])
+			}
+		}
+	}
 	return nil
 }
