@@ -67,6 +67,14 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newDoctorCmd())
 	root.AddCommand(newRotateKeyCmd())
 
+	// cq subcommands ported from 8th-layer-agent/cli per Decision 35.
+	root.AddCommand(newProposeCmd())
+	root.AddCommand(newQueryCmd())
+	root.AddCommand(newConfirmCmd())
+	root.AddCommand(newFlagCmd())
+	root.AddCommand(newDrainCmd())
+	root.AddCommand(newPromptCmd())
+
 	return root
 }
 
