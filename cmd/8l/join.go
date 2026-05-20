@@ -249,6 +249,13 @@ func runSmoke(stdout, stderr io.Writer, f *joinFlags, endpoint, apiKey string) e
 	}
 	fmt.Fprintf(stdout, "8l: smoke ok — propose tier=%s unit_id=%s\n", resp.Tier, resp.UnitID)
 	fmt.Fprintf(stdout, "8l: bound %s/%s/%s via %s\n", f.Enterprise, f.L2, f.Persona, endpoint)
+	token := encodeQuickToken(quickPayload{
+		Enterprise: f.Enterprise,
+		L2:         f.L2,
+		Persona:    f.Persona,
+		APIKey:     apiKey,
+	})
+	fmt.Fprintf(stdout, "8l: quick-join token (key-equivalent, share like the api-key):\n    %s\n", token)
 	return nil
 }
 

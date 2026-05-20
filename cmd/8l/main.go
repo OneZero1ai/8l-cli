@@ -1,6 +1,6 @@
 // Command 8l is the 8th-Layer.ai management CLI.
 //
-// V1 subcommands: join, status, unjoin, doctor, rotate-key.
+// V1 subcommands: join, quick, status, unjoin, doctor, rotate-key.
 // See docs/decisions/29-join-cli-design.md for the contract.
 package main
 
@@ -62,6 +62,7 @@ func newRootCmd() *cobra.Command {
 	}
 
 	root.AddCommand(newJoinCmd())
+	root.AddCommand(newQuickCmd())
 	root.AddCommand(newStatusCmd())
 	root.AddCommand(newUnjoinCmd())
 	root.AddCommand(newDoctorCmd())
