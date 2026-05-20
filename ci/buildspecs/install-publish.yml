@@ -1,0 +1,49 @@
+version: 0.2
+
+# Publish the install.sh script served at https://install.8th-layer.ai.
+# Runs in AWS CodeBuild — project `install-script-publish`, account
+# 124074140789, us-east-1 — triggered by a push to `main` through the
+# `8th-layer-github` CodeConnections webhook.
+#
+# Required env vars on the CodeBuild project (NOT hardcoded here so the
+# buildspec stays portable):
+#
+#   INSTALL_BUCKET            S3 bucket fronting install.8th-layer.ai
+#   INSTALL_CF_DISTRIBUTION   CloudFront distribution ID for cache invalidation
+#
+# This is the only path that should ever write to the install.8th-layer.ai
+# origin. If you find yourself doing `aws s3 cp install.sh s3://…` by
+# hand, stop — that's how we ended up with an out-of-band orphan script
+# (see 8th-layer-agent#353).
+#
+# The script itself sits at the repo root (install.sh). It is small and
+# self-contained; no build step.
+
+phases:
+  pre_build:
+    commands:
+      - test -f install.sh
+      - head -1 install.sh | grep -q '^#!/bin/sh' || { echo "install.sh missing shebang"; exit 1; }
+      # `shellcheck` if available — non-blocking. The script targets POSIX
+      # sh, so we lint with -s sh rather than bash.
+      - which shellcheck >/dev/null 2>&1 && shellcheck -s sh install.sh || echo "shellcheck not installed; skipping lint"
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        : "${INSTALL_BUCKET:?INSTALL_BUCKET env var required}"
+
+        # Object key is the empty path (i.e. the bucket's website root) so
+        # `curl https://install.8th-layer.ai` returns the script body.
+        # Content-Type forces shells to treat it as a script, not text/html.
+        aws s3 cp install.sh "s3://${INSTALL_BUCKET}/" \
+          --content-type "text/x-shellscript; charset=utf-8" \
+          --cache-control "public, max-age=60"
+
+        if [ -n "${INSTALL_CF_DISTRIBUTION:-}" ]; then
+          aws cloudfront create-invalidation \
+            --distribution-id "${INSTALL_CF_DISTRIBUTION}" \
+            --paths "/*"
+        else
+          echo "INSTALL_CF_DISTRIBUTION not set; skipping CloudFront invalidation"
+        fi

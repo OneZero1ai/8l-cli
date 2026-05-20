@@ -16,7 +16,30 @@ See [`docs/USAGE.md`](docs/USAGE.md) for end-to-end examples.
 
 ## Install
 
-One-shot setup (build + install + join) for an operator on a fresh box:
+### Public installer (curl-to-shell)
+
+`install.sh` (served at <https://install.8th-layer.ai>) installs both
+the operator binary `8l` and the agent binary `8l-cq` side-by-side
+under `~/.local/bin`:
+
+```sh
+curl -fsSL https://install.8th-layer.ai | sh                # both
+curl -fsSL https://install.8th-layer.ai | sh -s -- --operator-only
+curl -fsSL https://install.8th-layer.ai | sh -s -- --agent-only
+curl -fsSL https://install.8th-layer.ai | sh -s -- --uninstall
+```
+
+See `./install.sh --help` for `--prefix`, `--version-8l`,
+`--version-cq`, `--no-verify`, and uninstall flags. Tarballs are
+verified against `SHA256SUMS` before extract (skipped with a warning
+when no sums file is published, which is currently the case for the
+cq tarball — see 8th-layer-agent/cli/RELEASING.md).
+
+### From-source setup (this repo)
+
+`./setup.sh` builds 8l from source, installs it to `/usr/local/bin`,
+and runs `8l join` in one shot — useful when you want to test
+unreleased changes:
 
 ```sh
 ./setup.sh \
