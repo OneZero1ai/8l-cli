@@ -217,7 +217,57 @@ func resolveEndpoint(stdout, stderr io.Writer, f *joinFlags, apiKey string) (str
 	if err != nil {
 		return "", wrapCoded(ExitMissingArg, err)
 	}
-	return bindEndpoint(stderr, f, apiKey, dedupe(cands))
+	cands = dedupe(cands)
+
+	// The directory may RECOMMEND which derived candidate to try first, but can
+	// never expand the credential destination set (codex): we act on its answer
+	// ONLY when it exactly equals a candidate we already derived. A non-derived
+	// recommendation is ignored — the key never reaches it. Skipped under override.
+	if os.Getenv(resolver.EndpointEnvOverride) == "" {
+		dctx, dcancel := context.WithTimeout(context.Background(), 3*time.Second)
+		rec := resolver.DirectoryEndpoint(dctx, f.Enterprise)
+		dcancel()
+		var ignoredNonDerived bool
+		cands, ignoredNonDerived = orderByRecommendation(cands, rec)
+		if ignoredNonDerived {
+			// Recommended something we did NOT derive → ignored (never added, never
+			// probed, key never sent). Don't echo the untrusted URL; just flag drift.
+			fmt.Fprintln(stderr, "8l: directory recommended a non-derived endpoint; ignoring (using deterministic candidates)")
+		}
+	}
+	return bindEndpoint(stderr, f, apiKey, cands)
+}
+
+// orderByRecommendation moves the directory's recommendation to the front of the
+// candidate list IFF it exactly equals an already-derived candidate. A non-derived
+// recommendation is NEVER added — the security hinge that keeps the directory from
+// expanding the credential destination set (codex). Returns (ordered, ignoredNonDerived).
+func orderByRecommendation(cands []string, rec string) ([]string, bool) {
+	if rec == "" {
+		return cands, false
+	}
+	i := indexOf(cands, rec)
+	if i < 0 {
+		return cands, true // recommended a host we didn't derive → ignore it
+	}
+	if i == 0 {
+		return cands, false
+	}
+	out := make([]string, 0, len(cands))
+	out = append(out, cands[i])
+	out = append(out, cands[:i]...)
+	out = append(out, cands[i+1:]...)
+	return out, false
+}
+
+// indexOf returns the index of v in s, or -1.
+func indexOf(s []string, v string) int {
+	for i, x := range s {
+		if x == v {
+			return i
+		}
+	}
+	return -1
 }
 
 // bindEndpoint probes the given candidate base URLs with the API key and returns
