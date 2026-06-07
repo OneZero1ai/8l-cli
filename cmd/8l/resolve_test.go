@@ -71,10 +71,9 @@ func TestBindRejectsIdentityMismatch(t *testing.T) {
 	cases := []struct{ ent, grp, per string }{
 		{"other", "default", "agent"}, // wrong enterprise
 		{"acme", "finance", "agent"},  // wrong group
-		{"acme", "default", "admin"},  // wrong persona
+		{"acme", "default", "admin"},  // server-returned persona conflicts
 		{"", "default", "agent"},      // empty enterprise (no compatibility fallback)
 		{"acme", "", "agent"},         // empty group
-		{"acme", "default", ""},       // empty persona
 	}
 	for _, c := range cases {
 		srv := mockL2(c.ent, c.grp, c.per, http.StatusOK)
@@ -83,6 +82,23 @@ func TestBindRejectsIdentityMismatch(t *testing.T) {
 		if err == nil {
 			t.Fatalf("identity (%q,%q,%q) should be rejected against (acme,default,agent)", c.ent, c.grp, c.per)
 		}
+	}
+}
+
+func TestBindAcceptsEmptyServerPersona(t *testing.T) {
+	// cq-server's /auth/me returns an EMPTY persona for api-key auth (#204 live
+	// finding against carmen-test06032026). Persona is a client-chosen label, not
+	// a key-enforced boundary, so an empty server persona must NOT block the bind —
+	// only enterprise+group (both returned non-empty) gate it. Requiring a non-empty
+	// persona match would break every real route53 join.
+	srv := mockL2("acme", "default", "", http.StatusOK)
+	defer srv.Close()
+	got, err := bindEndpoint(io.Discard, joinF(), testKey, []string{srv.URL})
+	if err != nil {
+		t.Fatalf("empty server persona must be accepted (persona-less api-key contract): %v", err)
+	}
+	if got != srv.URL {
+		t.Fatalf("bound %q; want %q", got, srv.URL)
 	}
 }
 
