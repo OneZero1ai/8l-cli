@@ -70,20 +70,35 @@ func TestCandidatesOverrideValidation(t *testing.T) {
 		}
 	}
 	bad := []string{
-		"http://evil.example.com",            // non-loopback http rejected
-		"ftp://x.example.com",                // wrong scheme
-		"https://user:pass@x.example.com",    // userinfo rejected
-		"https://x.example.com/some/path",    // path rejected (origin-only)
-		"https://x.example.com/?q=1",         // query rejected
-		"https://x.example.com/#frag",        // fragment rejected
-		"https://",                           // no host
-		"not-a-url and spaces",               // unparseable / no scheme
+		"http://evil.example.com",         // non-loopback http rejected
+		"ftp://x.example.com",             // wrong scheme
+		"https://user:pass@x.example.com", // userinfo rejected
+		"https://x.example.com/some/path", // path rejected (origin-only)
+		"https://x.example.com//evil",     // double-slash path must NOT be trimmed-away
+		"https://x.example.com/%2f..",     // encoded path segment rejected
+		"https://x.example.com/?q=1",      // query rejected
+		"https://x.example.com/#frag",     // fragment rejected
+		"https://",                        // no host
+		"not-a-url and spaces",            // unparseable / no scheme
 	}
 	for _, v := range bad {
 		t.Setenv(EndpointEnvOverride, v)
 		if _, err := Candidates("ent", "l2"); err == nil {
 			t.Fatalf("override %q should be REJECTED", v)
 		}
+	}
+}
+
+func TestOverrideReturnsNormalizedOrigin(t *testing.T) {
+	// The returned candidate is a RECONSTRUCTED origin (scheme://host[:port]),
+	// not the raw input — no trailing slash, no smuggled path.
+	t.Setenv(EndpointEnvOverride, "https://l2.corp:8443/")
+	got, err := Candidates("ent", "l2")
+	if err != nil {
+		t.Fatalf("Candidates: %v", err)
+	}
+	if len(got) != 1 || got[0] != "https://l2.corp:8443" {
+		t.Fatalf("normalized override = %v; want [https://l2.corp:8443]", got)
 	}
 }
 

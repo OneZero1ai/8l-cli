@@ -89,10 +89,16 @@ func validateOverride(v string) (string, error) {
 	if u.RawQuery != "" || u.Fragment != "" {
 		return "", fmt.Errorf("resolver: %s must be an origin (no query/fragment)", EndpointEnvOverride)
 	}
-	if p := strings.Trim(u.Path, "/"); p != "" {
+	// Origin-only: reject ANY path, including "//" and percent-encoded segments
+	// (don't merely trim slashes, which would accept "//evil" or "/%2f..").
+	if u.Path != "" && u.Path != "/" {
 		return "", fmt.Errorf("resolver: %s must be an origin (no path), got path %q", EndpointEnvOverride, u.Path)
 	}
-	return strings.TrimRight(strings.TrimSuffix(v, "/"), "/"), nil
+	if u.RawPath != "" {
+		return "", fmt.Errorf("resolver: %s must be an origin (no encoded path)", EndpointEnvOverride)
+	}
+	// Return a RECONSTRUCTED normalized origin, not the raw input.
+	return u.Scheme + "://" + u.Host, nil
 }
 
 // Endpoint returns the most-likely canonical URL for an (enterprise, l2) pair

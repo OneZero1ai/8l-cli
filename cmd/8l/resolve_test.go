@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -130,6 +131,42 @@ func TestBindRefusesRedirectAndNeverLeaksKeyToAttacker(t *testing.T) {
 	}
 	if atomic.LoadInt32(&attackerSawAuth) != 0 {
 		t.Fatal("attacker received the Authorization header — credential leak")
+	}
+}
+
+func TestBindAuthFailThenNetworkSurfacesAsAuth(t *testing.T) {
+	// The exact dummy-key live path: route53 → 401, legacy → DNS/network failure.
+	// The result must be an AUTH error (a real L2 rejected the key), not a DNS error.
+	rejecting := mockL2("acme", "default", "agent", http.StatusUnauthorized)
+	defer rejecting.Close()
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close() // unreachable → network error
+
+	_, err := bindEndpoint(io.Discard, joinF(), testKey, []string{rejecting.URL, deadURL})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var ec ExitCoder
+	if !errors.As(err, &ec) || ec.ExitCode() != ExitAuthFail {
+		t.Fatalf("expected ExitAuthFail (a real L2 rejected the key), got %v (code path must not surface DNS)", err)
+	}
+}
+
+func TestBindMismatchFirstThenExactMatchSecond(t *testing.T) {
+	// A reachable candidate that authenticates but to the WRONG identity must NOT
+	// shadow a later candidate that matches exactly — probe-all, bind-first-exact.
+	wrong := mockL2("other-tenant", "default", "agent", http.StatusOK)
+	defer wrong.Close()
+	right := mockL2("acme", "default", "agent", http.StatusOK)
+	defer right.Close()
+
+	got, err := bindEndpoint(io.Discard, joinF(), testKey, []string{wrong.URL, right.URL})
+	if err != nil {
+		t.Fatalf("bindEndpoint: %v", err)
+	}
+	if got != right.URL {
+		t.Fatalf("bound %q; want %q (a mismatched first candidate must not shadow the exact match)", got, right.URL)
 	}
 }
 
