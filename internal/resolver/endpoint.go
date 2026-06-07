@@ -92,7 +92,9 @@ func normalizeOrigin(raw string, allowLoopbackHTTP bool) (string, bool) {
 	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return "", false
 	}
-	if p := strings.Trim(u.Path, "/"); p != "" {
+	// Origin-only: reject ANY path, including "//", "///", and percent-encoded
+	// segments — exact equality, not a slash-trim (which would accept "//evil").
+	if u.Path != "" && u.Path != "/" {
 		return "", false
 	}
 	if u.RawPath != "" {
@@ -117,7 +119,12 @@ func normalizeOrigin(raw string, allowLoopbackHTTP bool) (string, bool) {
 	default:
 		return "", false
 	}
-	out := u.Scheme + "://" + host
+	// Bracket IPv6 literals (e.g. ::1) so the reconstructed origin is valid.
+	hostpart := host
+	if strings.Contains(host, ":") {
+		hostpart = "[" + host + "]"
+	}
+	out := u.Scheme + "://" + hostpart
 	if port := u.Port(); port != "" &&
 		!((u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80")) {
 		out += ":" + port
@@ -163,7 +170,9 @@ func DirectoryEndpoint(ctx context.Context, enterprise string) string {
 	req.Header.Set("User-Agent", "8l-cli/0.1")
 	req.Header.Set("Accept", "application/json")
 	client := &http.Client{
-		Timeout: 5 * time.Second,
+		// Short, capped: this is a non-authoritative ordering hint — a directory
+		// outage must NOT delay trying the already-known route53 host (codex).
+		Timeout: 2 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return fmt.Errorf("resolver: refusing directory redirect")
 		},
@@ -176,12 +185,23 @@ func DirectoryEndpoint(ctx context.Context, enterprise string) string {
 	if resp.StatusCode != http.StatusOK {
 		return ""
 	}
-	var out struct {
-		EndpointURL string `json:"endpoint_url"`
-	}
-	dec := json.NewDecoder(io.LimitReader(resp.Body, directoryRespCap))
-	if err := dec.Decode(&out); err != nil {
+	// Read at most cap+1 and REJECT if over the cap (don't let json.Decode accept a
+	// valid prefix of an oversized/trailing-JSON body). Then require ONE complete
+	// document whose binding fields match the request (codex).
+	body, err := io.ReadAll(io.LimitReader(resp.Body, directoryRespCap+1))
+	if err != nil || len(body) > directoryRespCap {
 		return ""
+	}
+	var out struct {
+		EnterpriseID string `json:"enterprise_id"`
+		L2ID         string `json:"l2_id"`
+		EndpointURL  string `json:"endpoint_url"`
+	}
+	if json.Unmarshal(body, &out) != nil {
+		return "" // trailing bytes / non-single-object → invalid
+	}
+	if out.EnterpriseID != enterprise || out.L2ID == "" || out.EndpointURL == "" {
+		return "" // recommendation must be bound to the requested enterprise
 	}
 	origin, ok := normalizeOrigin(out.EndpointURL, false) // a real directory answer is https
 	if !ok {

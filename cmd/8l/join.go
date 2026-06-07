@@ -224,7 +224,7 @@ func resolveEndpoint(stdout, stderr io.Writer, f *joinFlags, apiKey string) (str
 	// ONLY when it exactly equals a candidate we already derived. A non-derived
 	// recommendation is ignored — the key never reaches it. Skipped under override.
 	if os.Getenv(resolver.EndpointEnvOverride) == "" {
-		dctx, dcancel := context.WithTimeout(context.Background(), 6*time.Second)
+		dctx, dcancel := context.WithTimeout(context.Background(), 3*time.Second)
 		rec := resolver.DirectoryEndpoint(dctx, f.Enterprise)
 		dcancel()
 		var ignoredNonDerived bool
