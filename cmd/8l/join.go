@@ -257,7 +257,13 @@ func bindEndpoint(stderr io.Writer, f *joinFlags, apiKey string, cands []string)
 			authErr = wrapCoded(ExitAuthFail, fmt.Errorf(
 				"auth/me group_id=%q does not match --l2=%q at %s", me.GroupID, f.L2, base))
 			continue
-		case me.Persona != f.Persona:
+		case me.Persona != "" && me.Persona != f.Persona:
+			// Persona is a client-chosen profile label, NOT a key-enforced
+			// boundary (that's enterprise+group, both checked above and always
+			// returned non-empty). The current cq-server /auth/me returns an
+			// empty persona regardless of auth kind, so enforce persona ONLY if a
+			// server ever returns a non-empty one — requiring a match otherwise
+			// would break every real join. (#204 live-verify, carmen-test06032026.)
 			authErr = wrapCoded(ExitAuthFail, fmt.Errorf(
 				"auth/me persona=%q does not match --persona=%q at %s", me.Persona, f.Persona, base))
 			continue
