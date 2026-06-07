@@ -186,6 +186,36 @@ func TestBindMismatchFirstThenExactMatchSecond(t *testing.T) {
 	}
 }
 
+func TestOrderByRecommendationNeverAddsNonDerived(t *testing.T) {
+	derived := []string{
+		"https://acme.enterprise.8th-layer.ai",
+		"https://default.acme.8th-layer.ai",
+	}
+	// SECURITY HINGE: a recommendation we did NOT derive is ignored — never added,
+	// so the key can never reach it (codex). The candidate set is unchanged.
+	out, ignored := orderByRecommendation(derived, "https://evil.example.com")
+	if !ignored || len(out) != 2 || out[0] != derived[0] || out[1] != derived[1] {
+		t.Fatalf("non-derived recommendation must be ignored, not added; got %v ignored=%v", out, ignored)
+	}
+	// Even an in-zone-but-non-derived host (another tenant's L2) must be ignored.
+	out, ignored = orderByRecommendation(derived, "https://attacker.enterprise.8th-layer.ai")
+	if !ignored || len(out) != 2 {
+		t.Fatalf("in-zone non-derived host must be ignored, not added; got %v ignored=%v", out, ignored)
+	}
+	// A DERIVED recommendation is moved to the front (ordering only).
+	out, ignored = orderByRecommendation(derived, "https://default.acme.8th-layer.ai")
+	if ignored || len(out) != 2 || out[0] != "https://default.acme.8th-layer.ai" {
+		t.Fatalf("derived recommendation should reorder to front; got %v ignored=%v", out, ignored)
+	}
+	// Empty / already-first recommendations are no-ops.
+	if o, ig := orderByRecommendation(derived, ""); ig || o[0] != derived[0] {
+		t.Fatalf("empty rec must be a no-op; got %v", o)
+	}
+	if o, ig := orderByRecommendation(derived, derived[0]); ig || o[0] != derived[0] {
+		t.Fatalf("already-first rec must be a no-op; got %v", o)
+	}
+}
+
 func TestBindAllFailReturnsAuthWhenAnyRejected(t *testing.T) {
 	a := mockL2("acme", "default", "agent", http.StatusUnauthorized)
 	defer a.Close()

@@ -2,11 +2,17 @@
 package resolver
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // EndpointEnvOverride lets a customer Enterprise with non-canonical DNS
@@ -15,6 +21,16 @@ import (
 // the API key to a non-8th-Layer-owned host — directory-driven discovery is
 // deliberately not a credential destination (issue #204; codex security review).
 const EndpointEnvOverride = "CQ_ADDR_OVERRIDE"
+
+// DirectoryURLEnv overrides the directory base URL the resolver QUERIES (never
+// with the L2 bearer) for a candidate-ordering recommendation.
+const DirectoryURLEnv = "CQ_DIRECTORY_URL"
+
+// defaultDirectoryURL matches the marketplace CQ_DIRECTORY_URL default.
+const defaultDirectoryURL = "https://directory.8th-layer.ai"
+
+// directoryRespCap bounds the directory response body (best-effort recommendation).
+const directoryRespCap = 8 << 10 // 8 KiB
 
 // enterpriseEdgeSuffix is the route53 per-enterprise edge suffix (Decision 43):
 // a route53 L2 lives at https://<enterprise>.enterprise.8th-layer.ai — one
@@ -60,45 +76,118 @@ func Candidates(enterprise, l2 string) ([]string, error) {
 	return cands, nil
 }
 
-// validateOverride enforces that CQ_ADDR_OVERRIDE is an ORIGIN-only URL the API
-// key may be sent to: https (or http for loopback only), a non-empty host, and
-// no userinfo / query / fragment / path. Returns the normalized origin.
-func validateOverride(v string) (string, error) {
-	u, err := url.Parse(v)
+// normalizeOrigin parses a URL and returns its canonical ORIGIN — the only thing
+// the API key may ever be sent to. It enforces: https (or http for loopback when
+// allowLoopbackHTTP), a non-empty lowercased host with one terminal dot stripped,
+// NO userinfo / query / fragment / path (incl. "//" and %2f), IP literals rejected,
+// and default ports (443/80) dropped so `host` and `host:443` compare equal. The
+// reconstructed origin is returned (never the raw input) so two inputs that mean
+// the same origin normalize identically — that exact-equality is the security hinge
+// for accepting a directory recommendation. ok=false on any violation.
+func normalizeOrigin(raw string, allowLoopbackHTTP bool) (string, bool) {
+	u, err := url.Parse(raw)
 	if err != nil {
-		return "", fmt.Errorf("resolver: %s=%q invalid: %w", EndpointEnvOverride, v, err)
+		return "", false
 	}
-	host := u.Hostname()
-	if host == "" {
-		return "", fmt.Errorf("resolver: %s=%q has no host", EndpointEnvOverride, v)
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", false
 	}
-	loopback := host == "localhost" || host == "127.0.0.1" || host == "::1"
-	switch u.Scheme {
-	case "https":
-		// ok
-	case "http":
-		if !loopback {
-			return "", fmt.Errorf("resolver: %s=%q — http is allowed only for loopback (localhost) dev", EndpointEnvOverride, v)
-		}
-	default:
-		return "", fmt.Errorf("resolver: %s=%q must be https (http://localhost allowed for dev)", EndpointEnvOverride, v)
-	}
-	if u.User != nil {
-		return "", fmt.Errorf("resolver: %s must not contain credentials (userinfo)", EndpointEnvOverride)
-	}
-	if u.RawQuery != "" || u.Fragment != "" {
-		return "", fmt.Errorf("resolver: %s must be an origin (no query/fragment)", EndpointEnvOverride)
-	}
-	// Origin-only: reject ANY path, including "//" and percent-encoded segments
-	// (don't merely trim slashes, which would accept "//evil" or "/%2f..").
-	if u.Path != "" && u.Path != "/" {
-		return "", fmt.Errorf("resolver: %s must be an origin (no path), got path %q", EndpointEnvOverride, u.Path)
+	if p := strings.Trim(u.Path, "/"); p != "" {
+		return "", false
 	}
 	if u.RawPath != "" {
-		return "", fmt.Errorf("resolver: %s must be an origin (no encoded path)", EndpointEnvOverride)
+		return "", false
 	}
-	// Return a RECONSTRUCTED normalized origin, not the raw input.
-	return u.Scheme + "://" + u.Host, nil
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "" {
+		return "", false
+	}
+	loopback := host == "localhost" || host == "127.0.0.1" || host == "::1"
+	// Reject IP literals (origin must be a name) — EXCEPT loopback on the dev path,
+	// where 127.0.0.1/::1 are how local/test servers are reached.
+	if net.ParseIP(host) != nil && !(allowLoopbackHTTP && loopback) {
+		return "", false
+	}
+	switch u.Scheme {
+	case "https":
+	case "http":
+		if !(allowLoopbackHTTP && loopback) {
+			return "", false
+		}
+	default:
+		return "", false
+	}
+	out := u.Scheme + "://" + host
+	if port := u.Port(); port != "" &&
+		!((u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80")) {
+		out += ":" + port
+	}
+	return out, true
+}
+
+// validateOverride enforces that CQ_ADDR_OVERRIDE is an ORIGIN-only URL the API
+// key may be sent to (https, or http loopback for dev). Returns the normalized origin.
+func validateOverride(v string) (string, error) {
+	origin, ok := normalizeOrigin(v, true)
+	if !ok {
+		return "", fmt.Errorf("resolver: %s=%q must be an https origin (no path/query/fragment/userinfo/IP; http allowed only for localhost)", EndpointEnvOverride, v)
+	}
+	return origin, nil
+}
+
+// DirectoryEndpoint asks the directory for the enterprise's recommended L2 origin.
+// It is a BEST-EFFORT, BOUNDED hint — NEVER a credential destination: the L2 bearer
+// is not sent here, and the caller acts on the result ONLY when it exactly equals a
+// candidate it independently derives (codex). Returns "" on ANY failure (override
+// set, bad CQ_DIRECTORY_URL, timeout, redirect, non-200, oversized/malformed body,
+// or a non-normalizable origin) so a join never fails because of the directory.
+func DirectoryEndpoint(ctx context.Context, enterprise string) string {
+	if enterprise == "" || os.Getenv(EndpointEnvOverride) != "" {
+		return "" // never override-path; never query when the operator pinned a URL
+	}
+	base := os.Getenv(DirectoryURLEnv)
+	if base == "" {
+		base = defaultDirectoryURL
+	}
+	// The directory URL receives no bearer, but still validate it origin-only +
+	// refuse redirects so the CLI isn't turned into a network oracle / spoof target.
+	baseOrigin, ok := normalizeOrigin(base, true)
+	if !ok {
+		return ""
+	}
+	u := baseOrigin + "/api/v1/directory/enterprises/" + url.PathEscape(enterprise) + "/l2-endpoint"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", "8l-cli/0.1")
+	req.Header.Set("Accept", "application/json")
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return fmt.Errorf("resolver: refusing directory redirect")
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var out struct {
+		EndpointURL string `json:"endpoint_url"`
+	}
+	dec := json.NewDecoder(io.LimitReader(resp.Body, directoryRespCap))
+	if err := dec.Decode(&out); err != nil {
+		return ""
+	}
+	origin, ok := normalizeOrigin(out.EndpointURL, false) // a real directory answer is https
+	if !ok {
+		return ""
+	}
+	return origin
 }
 
 // Endpoint returns the most-likely canonical URL for an (enterprise, l2) pair
