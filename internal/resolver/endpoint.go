@@ -2,11 +2,15 @@
 package resolver
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // EndpointEnvOverride lets a customer Enterprise with non-canonical DNS
@@ -14,24 +18,90 @@ import (
 // environment before running `8l join`.
 const EndpointEnvOverride = "CQ_ADDR_OVERRIDE"
 
-// Endpoint returns the canonical URL for an (enterprise, l2) pair, or
-// the override URL if CQ_ADDR_OVERRIDE is set.
+// enterpriseEdgeSuffix is the route53 per-enterprise edge suffix (Decision 43):
+// a route53 L2 lives at https://<enterprise>.enterprise.8th-layer.ai — one
+// ALB/cert/FQDN per enterprise slug; the L2 group is an internal partition, so
+// it is NOT part of the hostname (issue #204).
+const enterpriseEdgeSuffix = "enterprise.8th-layer.ai"
+
+// DirectoryURLEnv overrides the directory base URL the resolver queries.
+const DirectoryURLEnv = "CQ_DIRECTORY_URL"
+
+// defaultDirectoryURL is the directory the CLI resolves L2 URLs from when
+// CQ_DIRECTORY_URL is unset (matches the marketplace CQ_DIRECTORY_URL default).
+const defaultDirectoryURL = "https://directory.8th-layer.ai"
+
+// Candidates returns the ordered base URLs to try for an (enterprise, l2) pair,
+// most-likely first, so a caller can probe each with the real API key and use
+// whichever authenticates (the key is ground truth — see issue #204). If
+// CQ_ADDR_OVERRIDE is set it is the sole candidate.
 //
-// Canonical shape: https://<l2>.<enterprise>.8th-layer.ai
-func Endpoint(enterprise, l2 string) (string, error) {
+//  1. https://<enterprise>.enterprise.8th-layer.ai  (route53 edge, current default)
+//  2. https://<l2>.<enterprise>.8th-layer.ai         (legacy cloudflare)
+func Candidates(enterprise, l2 string) ([]string, error) {
 	if v := os.Getenv(EndpointEnvOverride); v != "" {
 		if _, err := url.Parse(v); err != nil {
-			return "", fmt.Errorf("resolver: %s=%q invalid: %w", EndpointEnvOverride, v, err)
+			return nil, fmt.Errorf("resolver: %s=%q invalid: %w", EndpointEnvOverride, v, err)
 		}
-		return strings.TrimRight(v, "/"), nil
+		return []string{strings.TrimRight(v, "/")}, nil
 	}
 	if enterprise == "" {
-		return "", fmt.Errorf("resolver: enterprise required")
+		return nil, fmt.Errorf("resolver: enterprise required")
 	}
 	if l2 == "" {
-		return "", fmt.Errorf("resolver: l2 required")
+		return nil, fmt.Errorf("resolver: l2 required")
 	}
-	return fmt.Sprintf("https://%s.%s.8th-layer.ai", l2, enterprise), nil
+	return []string{
+		fmt.Sprintf("https://%s.%s", enterprise, enterpriseEdgeSuffix),
+		fmt.Sprintf("https://%s.%s.8th-layer.ai", l2, enterprise),
+	}, nil
+}
+
+// Endpoint returns the most-likely canonical URL for an (enterprise, l2) pair
+// (route53 edge first), or the override URL if CQ_ADDR_OVERRIDE is set. Callers
+// that hold an API key should prefer Candidates + an authenticated probe; this
+// is the no-probe default (e.g. doctor, --no-smoke).
+func Endpoint(enterprise, l2 string) (string, error) {
+	cands, err := Candidates(enterprise, l2)
+	if err != nil {
+		return "", err
+	}
+	return cands[0], nil
+}
+
+// DirectoryEndpoint best-effort resolves the enterprise's real L2 base URL from
+// the directory (issue #204). Returns "" on ANY failure — the caller falls back
+// to Candidates, and always validates the chosen URL with the API key, so a
+// stale/missing directory answer is harmless.
+func DirectoryEndpoint(ctx context.Context, enterprise string) string {
+	if enterprise == "" || os.Getenv(EndpointEnvOverride) != "" {
+		return ""
+	}
+	base := os.Getenv(DirectoryURLEnv)
+	if base == "" {
+		base = defaultDirectoryURL
+	}
+	u := strings.TrimRight(base, "/") + "/api/v1/directory/enterprises/" + url.PathEscape(enterprise) + "/l2-endpoint"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", "8l-cli/0.1")
+	resp, err := (&http.Client{Timeout: 8 * time.Second}).Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var out struct {
+		EndpointURL string `json:"endpoint_url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return ""
+	}
+	return strings.TrimRight(out.EndpointURL, "/")
 }
 
 // Host returns just the hostname for an (enterprise, l2) pair. Used by

@@ -91,9 +91,9 @@ func runJoin(stdout, stderr io.Writer, f *joinFlags) error {
 	if err != nil {
 		return wrapCoded(ExitInvalidKey, err)
 	}
-	endpoint, err := resolver.Endpoint(f.Enterprise, f.L2)
+	endpoint, err := resolveEndpoint(stdout, stderr, f, apiKey)
 	if err != nil {
-		return wrapCoded(ExitMissingArg, err)
+		return err
 	}
 
 	desired := &profile.Profile{
@@ -218,6 +218,61 @@ func runJoin(stdout, stderr io.Writer, f *joinFlags) error {
 		return err
 	}
 	return nil
+}
+
+// resolveEndpoint determines the L2 base URL (issue #204). It prefers the
+// directory's recorded URL, then the known URL schemes (route53 edge, then
+// legacy), and VALIDATES each candidate with the API key against /auth/me — the
+// key is ground truth, so a wrong or stale directory value can never bind us to
+// the wrong host. CQ_ADDR_OVERRIDE short-circuits to a single candidate.
+func resolveEndpoint(stdout, stderr io.Writer, f *joinFlags, apiKey string) (string, error) {
+	cands, err := resolver.Candidates(f.Enterprise, f.L2)
+	if err != nil {
+		return "", wrapCoded(ExitMissingArg, err)
+	}
+	// Best-effort: the directory's recorded URL goes first (authoritative once
+	// the L2 has announced). No-op under CQ_ADDR_OVERRIDE or on any failure.
+	dctx, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
+	d := resolver.DirectoryEndpoint(dctx, f.Enterprise)
+	dcancel()
+	if d != "" && d != cands[0] {
+		cands = append([]string{d}, cands...)
+	}
+
+	// Without a smoke probe we cannot validate; use the most-likely candidate.
+	if f.NoSmoke {
+		return cands[0], nil
+	}
+
+	logger := newVerboseLogger(stderr, f.Verbose)
+	var lastErr error
+	for _, base := range cands {
+		client := l2client.New(base, apiKey)
+		client.Verbose = logger
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		me, err := client.AuthMe(ctx)
+		cancel()
+		if err == nil {
+			if me.EnterpriseID != "" && me.EnterpriseID != f.Enterprise {
+				return "", wrapCoded(ExitAuthFail, fmt.Errorf(
+					"auth/me enterprise_id=%q does not match --enterprise=%q at %s (key bound to a different tenant)",
+					me.EnterpriseID, f.Enterprise, base))
+			}
+			fmt.Fprintf(stderr, "8l: resolved L2 endpoint %s\n", base)
+			return base, nil
+		}
+		// An auth rejection means we reached a real L2 (it served /auth/me) but
+		// the key/tenant is wrong — stop probing and report it, don't fall through
+		// to a different host with the same (bad) key.
+		if l2client.IsAuth(err) {
+			return "", classifyAuthError(err)
+		}
+		lastErr = err
+	}
+	return "", wrapCoded(ExitDNSFail, fmt.Errorf(
+		"could not reach the L2 for %s/%s at any known URL (last error: %v); "+
+			"set CQ_ADDR_OVERRIDE to the L2's real https URL and retry",
+		f.Enterprise, f.L2, lastErr))
 }
 
 // runSmoke does the post-write probe sequence.

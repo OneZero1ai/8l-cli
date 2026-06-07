@@ -1,6 +1,11 @@
 package resolver
 
-import "testing"
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 func TestEndpoint(t *testing.T) {
 	t.Setenv(EndpointEnvOverride, "")
@@ -8,9 +13,78 @@ func TestEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Endpoint: %v", err)
 	}
-	want := "https://engineering.8th-layer-corp.8th-layer.ai"
+	// route53 edge is the current default (issue #204): per-enterprise host.
+	want := "https://8th-layer-corp.enterprise.8th-layer.ai"
 	if got != want {
 		t.Fatalf("Endpoint = %q want %q", got, want)
+	}
+}
+
+func TestCandidates(t *testing.T) {
+	t.Setenv(EndpointEnvOverride, "")
+	got, err := Candidates("8th-layer-corp", "engineering")
+	if err != nil {
+		t.Fatalf("Candidates: %v", err)
+	}
+	want := []string{
+		"https://8th-layer-corp.enterprise.8th-layer.ai", // route53 first
+		"https://engineering.8th-layer-corp.8th-layer.ai", // legacy second
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("Candidates = %v want %v", got, want)
+	}
+}
+
+func TestCandidatesOverrideIsSole(t *testing.T) {
+	t.Setenv(EndpointEnvOverride, "https://customer.example.com/")
+	got, err := Candidates("ent", "l2")
+	if err != nil {
+		t.Fatalf("Candidates: %v", err)
+	}
+	if len(got) != 1 || got[0] != "https://customer.example.com" {
+		t.Fatalf("override candidates = %v; want single trimmed override", got)
+	}
+}
+
+func TestCandidatesMissing(t *testing.T) {
+	t.Setenv(EndpointEnvOverride, "")
+	if _, err := Candidates("", "x"); err == nil {
+		t.Fatal("expected enterprise-required error")
+	}
+	if _, err := Candidates("x", ""); err == nil {
+		t.Fatal("expected l2-required error")
+	}
+}
+
+func TestDirectoryEndpoint(t *testing.T) {
+	t.Setenv(EndpointEnvOverride, "")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/directory/enterprises/acme/l2-endpoint" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"enterprise_id":"acme","l2_id":"acme/primary","endpoint_url":"https://acme.enterprise.8th-layer.ai/"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	t.Setenv(DirectoryURLEnv, srv.URL)
+
+	got := DirectoryEndpoint(context.Background(), "acme")
+	if got != "https://acme.enterprise.8th-layer.ai" { // trailing slash trimmed
+		t.Fatalf("DirectoryEndpoint = %q", got)
+	}
+	// unknown enterprise → 404 → "" (best-effort)
+	if got := DirectoryEndpoint(context.Background(), "nope"); got != "" {
+		t.Fatalf("DirectoryEndpoint(unknown) = %q want empty", got)
+	}
+}
+
+func TestDirectoryEndpointSkippedUnderOverride(t *testing.T) {
+	// When the operator pins CQ_ADDR_OVERRIDE, the directory must not be queried.
+	t.Setenv(EndpointEnvOverride, "https://pinned.example.com")
+	t.Setenv(DirectoryURLEnv, "https://should-not-be-called.invalid")
+	if got := DirectoryEndpoint(context.Background(), "acme"); got != "" {
+		t.Fatalf("DirectoryEndpoint under override = %q want empty", got)
 	}
 }
 
