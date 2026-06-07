@@ -150,32 +150,10 @@ func runJoin(stdout, stderr io.Writer, f *joinFlags) error {
 		}
 	}
 
-	// Pre-flight smoke BEFORE writing: avoids leaving a partially-applied
-	// profile when auth fails. We probe /auth/me first; if it succeeds,
-	// write profile, then run the propose smoke. If propose fails, roll
-	// back the profile to its prior state.
-	logger := newVerboseLogger(stderr, f.Verbose)
-	client := l2client.New(endpoint, apiKey)
-	client.Verbose = logger
-
-	if !f.NoSmoke {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		me, err := client.AuthMe(ctx)
-		if err != nil {
-			return classifyAuthError(err)
-		}
-		if me.EnterpriseID != "" && me.EnterpriseID != f.Enterprise {
-			return wrapCoded(ExitAuthFail, fmt.Errorf(
-				"auth/me enterprise_id=%q does not match --enterprise=%q (key bound to a different tenant)",
-				me.EnterpriseID, f.Enterprise))
-		}
-		if me.GroupID != "" && me.GroupID != f.L2 {
-			return wrapCoded(ExitAuthFail, fmt.Errorf(
-				"auth/me group_id=%q does not match --l2=%q (key bound to a different L2)",
-				me.GroupID, f.L2))
-		}
-	}
+	// resolveEndpoint (above) already authenticated /auth/me on `endpoint` and
+	// confirmed it binds to exactly (enterprise, l2, persona) — that probe is
+	// MANDATORY (even under --no-smoke), so by here the binding is validated and
+	// we never write a profile pointing at an unverified host.
 
 	// Snapshot existing profile bytes so we can roll back on smoke failure.
 	var rollback []byte
@@ -220,31 +198,34 @@ func runJoin(stdout, stderr io.Writer, f *joinFlags) error {
 	return nil
 }
 
-// resolveEndpoint determines the L2 base URL (issue #204). It prefers the
-// directory's recorded URL, then the known URL schemes (route53 edge, then
-// legacy), and VALIDATES each candidate with the API key against /auth/me — the
-// key is ground truth, so a wrong or stale directory value can never bind us to
-// the wrong host. CQ_ADDR_OVERRIDE short-circuits to a single candidate.
+// resolveEndpoint determines and BINDS the L2 base URL (issue #204).
+//
+// It tries only DETERMINISTIC, 8th-Layer-owned candidates (route53 edge, then
+// legacy) — or a validated CQ_ADDR_OVERRIDE — and confirms each by calling
+// /auth/me with the API key, binding to the first that authenticates AND whose
+// (enterprise, group, persona) exactly match the flags. Security properties
+// (codex review):
+//   - The key is never sent to a non-deterministic / registry-provided host;
+//     directory discovery is not a credential destination.
+//   - The probe is MANDATORY even under --no-smoke (--no-smoke only skips the
+//     later propose smoke), so a profile is never written for an unverified host.
+//   - l2client refuses redirects, so a 3xx can't resend the key to another origin.
+//   - A stale candidate returning 401/403 does NOT shadow a healthy one: we probe
+//     every candidate and only return an auth error if NONE authenticate.
 func resolveEndpoint(stdout, stderr io.Writer, f *joinFlags, apiKey string) (string, error) {
 	cands, err := resolver.Candidates(f.Enterprise, f.L2)
 	if err != nil {
 		return "", wrapCoded(ExitMissingArg, err)
 	}
-	// Best-effort: the directory's recorded URL goes first (authoritative once
-	// the L2 has announced). No-op under CQ_ADDR_OVERRIDE or on any failure.
-	dctx, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
-	d := resolver.DirectoryEndpoint(dctx, f.Enterprise)
-	dcancel()
-	if d != "" && d != cands[0] {
-		cands = append([]string{d}, cands...)
-	}
+	return bindEndpoint(stderr, f, apiKey, dedupe(cands))
+}
 
-	// Without a smoke probe we cannot validate; use the most-likely candidate.
-	if f.NoSmoke {
-		return cands[0], nil
-	}
-
+// bindEndpoint probes the given candidate base URLs with the API key and returns
+// the first that authenticates with an exact (enterprise, group, persona) match.
+// Split from resolveEndpoint so tests can drive it against httptest servers.
+func bindEndpoint(stderr io.Writer, f *joinFlags, apiKey string, cands []string) (string, error) {
 	logger := newVerboseLogger(stderr, f.Verbose)
+	var sawAuthFail bool
 	var lastErr error
 	for _, base := range cands {
 		client := l2client.New(base, apiKey)
@@ -252,27 +233,55 @@ func resolveEndpoint(stdout, stderr io.Writer, f *joinFlags, apiKey string) (str
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		me, err := client.AuthMe(ctx)
 		cancel()
-		if err == nil {
-			if me.EnterpriseID != "" && me.EnterpriseID != f.Enterprise {
-				return "", wrapCoded(ExitAuthFail, fmt.Errorf(
-					"auth/me enterprise_id=%q does not match --enterprise=%q at %s (key bound to a different tenant)",
-					me.EnterpriseID, f.Enterprise, base))
+		if err != nil {
+			// A reachable-but-rejecting host (401/403) might just be a stale
+			// candidate; remember it but keep probing the others. Network/DNS
+			// errors (dead candidate) likewise fall through.
+			if l2client.IsAuth(err) {
+				sawAuthFail = true
 			}
-			fmt.Fprintf(stderr, "8l: resolved L2 endpoint %s\n", base)
-			return base, nil
+			lastErr = err
+			continue
 		}
-		// An auth rejection means we reached a real L2 (it served /auth/me) but
-		// the key/tenant is wrong — stop probing and report it, don't fall through
-		// to a different host with the same (bad) key.
-		if l2client.IsAuth(err) {
-			return "", classifyAuthError(err)
+		// Authenticated: require EXACT, non-empty identity match. A valid key for
+		// a different tenant/partition/persona must not produce a mislabelled bind.
+		if me.EnterpriseID != f.Enterprise {
+			return "", wrapCoded(ExitAuthFail, fmt.Errorf(
+				"auth/me enterprise_id=%q does not match --enterprise=%q at %s", me.EnterpriseID, f.Enterprise, base))
 		}
-		lastErr = err
+		if me.GroupID != f.L2 {
+			return "", wrapCoded(ExitAuthFail, fmt.Errorf(
+				"auth/me group_id=%q does not match --l2=%q at %s", me.GroupID, f.L2, base))
+		}
+		if me.Persona != f.Persona {
+			return "", wrapCoded(ExitAuthFail, fmt.Errorf(
+				"auth/me persona=%q does not match --persona=%q at %s", me.Persona, f.Persona, base))
+		}
+		fmt.Fprintf(stderr, "8l: resolved L2 endpoint %s\n", base)
+		return base, nil
+	}
+	if sawAuthFail {
+		// At least one real L2 answered but rejected the key — surface as auth.
+		return "", classifyAuthError(lastErr)
 	}
 	return "", wrapCoded(ExitDNSFail, fmt.Errorf(
 		"could not reach the L2 for %s/%s at any known URL (last error: %v); "+
 			"set CQ_ADDR_OVERRIDE to the L2's real https URL and retry",
 		f.Enterprise, f.L2, lastErr))
+}
+
+// dedupe returns s with duplicate values removed, preserving order.
+func dedupe(s []string) []string {
+	seen := make(map[string]struct{}, len(s))
+	out := s[:0]
+	for _, v := range s {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
 }
 
 // runSmoke does the post-write probe sequence.

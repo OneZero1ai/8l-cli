@@ -1,11 +1,6 @@
 package resolver
 
-import (
-	"context"
-	"net/http"
-	"net/http/httptest"
-	"testing"
-)
+import "testing"
 
 func TestEndpoint(t *testing.T) {
 	t.Setenv(EndpointEnvOverride, "")
@@ -27,7 +22,7 @@ func TestCandidates(t *testing.T) {
 		t.Fatalf("Candidates: %v", err)
 	}
 	want := []string{
-		"https://8th-layer-corp.enterprise.8th-layer.ai", // route53 first
+		"https://8th-layer-corp.enterprise.8th-layer.ai",  // route53 first
 		"https://engineering.8th-layer-corp.8th-layer.ai", // legacy second
 	}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
@@ -35,56 +30,60 @@ func TestCandidates(t *testing.T) {
 	}
 }
 
-func TestCandidatesOverrideIsSole(t *testing.T) {
-	t.Setenv(EndpointEnvOverride, "https://customer.example.com/")
-	got, err := Candidates("ent", "l2")
+func TestCandidatesNonDNSLabelL2DropsLegacy(t *testing.T) {
+	t.Setenv(EndpointEnvOverride, "")
+	// A group that is not a DNS label (route53 groups can be broader) must NOT
+	// error — it just drops the legacy candidate, keeping the route53 one.
+	got, err := Candidates("acme", "team_alpha")
 	if err != nil {
 		t.Fatalf("Candidates: %v", err)
 	}
-	if len(got) != 1 || got[0] != "https://customer.example.com" {
-		t.Fatalf("override candidates = %v; want single trimmed override", got)
+	if len(got) != 1 || got[0] != "https://acme.enterprise.8th-layer.ai" {
+		t.Fatalf("non-DNS l2 candidates = %v; want route53-only", got)
 	}
 }
 
-func TestCandidatesMissing(t *testing.T) {
+func TestCandidatesEnterpriseMustBeDNSLabel(t *testing.T) {
 	t.Setenv(EndpointEnvOverride, "")
-	if _, err := Candidates("", "x"); err == nil {
-		t.Fatal("expected enterprise-required error")
-	}
-	if _, err := Candidates("x", ""); err == nil {
-		t.Fatal("expected l2-required error")
-	}
-}
-
-func TestDirectoryEndpoint(t *testing.T) {
-	t.Setenv(EndpointEnvOverride, "")
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/directory/enterprises/acme/l2-endpoint" {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"enterprise_id":"acme","l2_id":"acme/primary","endpoint_url":"https://acme.enterprise.8th-layer.ai/"}`))
-			return
+	for _, ent := range []string{"", "UPPER", "has_underscore", "ends-", "a..b", "white space"} {
+		if _, err := Candidates(ent, "default"); err == nil {
+			t.Fatalf("enterprise %q should be rejected as a non-DNS label", ent)
 		}
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-	t.Setenv(DirectoryURLEnv, srv.URL)
-
-	got := DirectoryEndpoint(context.Background(), "acme")
-	if got != "https://acme.enterprise.8th-layer.ai" { // trailing slash trimmed
-		t.Fatalf("DirectoryEndpoint = %q", got)
-	}
-	// unknown enterprise → 404 → "" (best-effort)
-	if got := DirectoryEndpoint(context.Background(), "nope"); got != "" {
-		t.Fatalf("DirectoryEndpoint(unknown) = %q want empty", got)
 	}
 }
 
-func TestDirectoryEndpointSkippedUnderOverride(t *testing.T) {
-	// When the operator pins CQ_ADDR_OVERRIDE, the directory must not be queried.
-	t.Setenv(EndpointEnvOverride, "https://pinned.example.com")
-	t.Setenv(DirectoryURLEnv, "https://should-not-be-called.invalid")
-	if got := DirectoryEndpoint(context.Background(), "acme"); got != "" {
-		t.Fatalf("DirectoryEndpoint under override = %q want empty", got)
+func TestCandidatesOverrideValidation(t *testing.T) {
+	ok := []string{
+		"https://customer.example.com/",      // trailing slash trimmed
+		"https://l2.internal.corp:8443",      // explicit port ok
+		"http://localhost:8080",              // loopback http dev exception
+		"http://127.0.0.1",                   // loopback http dev exception
+	}
+	for _, v := range ok {
+		t.Setenv(EndpointEnvOverride, v)
+		got, err := Candidates("ent", "l2")
+		if err != nil {
+			t.Fatalf("override %q should be accepted: %v", v, err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("override %q -> %v; want single candidate", v, got)
+		}
+	}
+	bad := []string{
+		"http://evil.example.com",            // non-loopback http rejected
+		"ftp://x.example.com",                // wrong scheme
+		"https://user:pass@x.example.com",    // userinfo rejected
+		"https://x.example.com/some/path",    // path rejected (origin-only)
+		"https://x.example.com/?q=1",         // query rejected
+		"https://x.example.com/#frag",        // fragment rejected
+		"https://",                           // no host
+		"not-a-url and spaces",               // unparseable / no scheme
+	}
+	for _, v := range bad {
+		t.Setenv(EndpointEnvOverride, v)
+		if _, err := Candidates("ent", "l2"); err == nil {
+			t.Fatalf("override %q should be REJECTED", v)
+		}
 	}
 }
 
@@ -101,11 +100,19 @@ func TestEndpointOverride(t *testing.T) {
 
 func TestEndpointMissing(t *testing.T) {
 	t.Setenv(EndpointEnvOverride, "")
+	// A non-DNS-label enterprise is fatal (it IS the route53 hostname label).
 	if _, err := Endpoint("", "x"); err == nil {
 		t.Fatal("expected enterprise-required error")
 	}
-	if _, err := Endpoint("x", ""); err == nil {
-		t.Fatal("expected l2-required error")
+	// An empty/non-DNS group is NOT fatal: route53 doesn't put the group in the
+	// hostname, so Endpoint still yields the route53 host (group equality is
+	// enforced later against /auth/me).
+	got, err := Endpoint("acme", "")
+	if err != nil {
+		t.Fatalf("Endpoint(acme, \"\") should succeed (route53-only): %v", err)
+	}
+	if got != "https://acme.enterprise.8th-layer.ai" {
+		t.Fatalf("Endpoint(acme, \"\") = %q", got)
 	}
 }
 
