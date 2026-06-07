@@ -258,12 +258,12 @@ func bindEndpoint(stderr io.Writer, f *joinFlags, apiKey string, cands []string)
 				"auth/me group_id=%q does not match --l2=%q at %s", me.GroupID, f.L2, base))
 			continue
 		case me.Persona != "" && me.Persona != f.Persona:
-			// Persona-less keys are a legitimate contract: cq-server's /auth/me
-			// returns an EMPTY persona for api-key auth (the persona is a
-			// client-chosen label recorded in the profile, not a key-enforced
-			// tenancy boundary — that's enterprise+group, both checked above and
-			// always returned non-empty). Only reject when the server DID return
-			// a persona and it conflicts. (#204 live-verify against carmen-test06032026.)
+			// Persona is a client-chosen profile label, NOT a key-enforced
+			// boundary (that's enterprise+group, both checked above and always
+			// returned non-empty). The current cq-server /auth/me returns an
+			// empty persona regardless of auth kind, so enforce persona ONLY if a
+			// server ever returns a non-empty one — requiring a match otherwise
+			// would break every real join. (#204 live-verify, carmen-test06032026.)
 			authErr = wrapCoded(ExitAuthFail, fmt.Errorf(
 				"auth/me persona=%q does not match --persona=%q at %s", me.Persona, f.Persona, base))
 			continue
