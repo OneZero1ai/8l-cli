@@ -150,20 +150,24 @@ func TestRunJoinRebindRefused(t *testing.T) {
 		t.Fatalf("first: %v", err)
 	}
 
+	// Rebinding the SAME key to a different persona is now refused at IDENTITY
+	// validation (#204 / codex): the key's /auth/me reports persona=alice, so it
+	// cannot be bound as "bob" — a profile must never claim an identity the key
+	// does not actually execute as. --force cannot override the key's real identity.
 	second := *first
 	second.Persona = "bob"
 	err := runJoin(&bytes.Buffer{}, &bytes.Buffer{}, &second)
 	if err == nil {
-		t.Fatal("expected refusal of rebind without --force")
+		t.Fatal("expected refusal: a key for persona alice must not bind as bob")
 	}
 	var ec ExitCoder
-	if !errors.As(err, &ec) || ec.ExitCode() != ExitProfileConflict {
-		t.Fatalf("expected ExitProfileConflict (15), got %v", err)
+	if !errors.As(err, &ec) || ec.ExitCode() != ExitAuthFail {
+		t.Fatalf("expected ExitAuthFail, got %v", err)
 	}
 
 	second.Force = true
-	if err := runJoin(&bytes.Buffer{}, &bytes.Buffer{}, &second); err != nil {
-		t.Fatalf("force rebind: %v", err)
+	if err := runJoin(&bytes.Buffer{}, &bytes.Buffer{}, &second); err == nil {
+		t.Fatal("--force must NOT let a key bind as a persona it does not have")
 	}
 }
 

@@ -41,6 +41,16 @@ func New(baseURL, apiKey string) *Client {
 		APIKey:  apiKey,
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
+			// Every request here carries the API key as a Bearer token. NEVER
+			// follow a redirect: a 3xx to another origin would resend the
+			// Authorization header to a host we didn't intend to trust, leaking
+			// the credential (issue #204 / codex security review). Returning an
+			// error means net/http does NOT issue the redirected request, so the
+			// target receives nothing; Do returns the (closed) 3xx response plus
+			// this error, which the caller treats as a non-auth failure.
+			CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+				return fmt.Errorf("l2client: refusing redirect to %s (credential confidentiality)", req.URL.Redacted())
+			},
 		},
 		UserAgent: "8l-cli/0.1",
 	}
